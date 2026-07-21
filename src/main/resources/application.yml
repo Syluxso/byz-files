@@ -25,6 +25,14 @@ spring:
     multipart:
       max-file-size: ${MAX_FILE_SIZE:50MB}
       max-request-size: ${MAX_REQUEST_SIZE:55MB}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+    admin:
+      fail-fast: false
 
 server:
   port: ${PORT:8089}
@@ -33,6 +41,10 @@ encryption:
   key: ${ENCRYPTION_KEY:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}
 
 byz:
+  kafka:
+    enabled: ${BYZ_KAFKA_ENABLED:true}
+    topics:
+      files-file: byz.files.file
   files:
     # Prod: set to the byz-admin organization UUID so only that org can hit /api/v1/admin/**.
     # Empty = any authenticated JWT (local/dev).

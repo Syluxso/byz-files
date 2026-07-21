@@ -69,11 +69,28 @@ Also set a real `ENCRYPTION_KEY` (Base64 AES key) in prod — do not use the zer
 | `GET` | `/api/v1/files/{id}/content` | Stream bytes (proxy) |
 | `DELETE` | `/api/v1/files/{id}` | Soft-delete + remove object |
 
+## Admin Files API (platform admin JWT)
+
+| Method | Path | Action |
+|--------|------|--------|
+| `GET` | `/api/v1/admin/files` | List across orgs (`organizationId?`, `status=active\|deleted\|all`, `page`, `size`) |
+| `GET` | `/api/v1/admin/files/{id}` | Metadata (+ `storageKey`) |
+| `POST` | `/api/v1/admin/files` | Multipart: `file` + `organizationId` |
+| `GET` | `/api/v1/admin/files/{id}/content` | Download stream |
+| `PATCH` | `/api/v1/admin/files/{id}` | Rename `{ "name": "…" }` |
+| `DELETE` | `/api/v1/admin/files/{id}` | Soft-delete + remove object |
+
+## Kafka
+
+After a successful upload commit, file-service emits `file.created` on topic **`byz.files.file`**
+(key = `fileId`). Contract: events-service `docs/EVENTS.md`. Toggle with `BYZ_KAFKA_ENABLED`
+(default true). Bootstrap the topic via events-service `POST /api/v1/topics/bootstrap`.
+
 ## Deploy
 
 Jenkins → `/opt/services/file-service` → `supervisorctl restart file-service`.
 
-Env sketch: `DB_*`, `IAM_JWKS_URL`, `ENCRYPTION_KEY`, `BYZ_ADMIN_ORGANIZATION_ID`, MinIO reachable from the host.
+Env sketch: `DB_*`, `IAM_JWKS_URL`, `ENCRYPTION_KEY`, `BYZ_ADMIN_ORGANIZATION_ID`, `KAFKA_BOOTSTRAP`, MinIO reachable from the host.
 
 ### One-time server setup (as root)
 

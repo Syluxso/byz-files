@@ -1,5 +1,7 @@
 package com.nyberg.files.file;
 
+import com.nyberg.files.events.FileCreatedApplicationEvent;
+import com.nyberg.files.events.FileLifecycleEvent;
 import com.nyberg.files.storage.StorageObject;
 import com.nyberg.files.storage.StorageProviderConfigService;
 import com.nyberg.files.storage.StorageProviderConfigService.ResolvedStorage;
@@ -7,6 +9,10 @@ import com.nyberg.files.tenant.OrganizationContext;
 import com.nyberg.files.tenant.TenantContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -33,6 +39,7 @@ public class FileService {
 
     private final StoredFileRepository repository;
     private final StorageProviderConfigService storageConfigs;
+    private final ApplicationEventPublisher applicationEventPublisher;
 
     @Transactional(readOnly = true)
     public List<FileResponse> list() {
@@ -42,14 +49,105 @@ public class FileService {
                 .toList();
     }
 
+    /** Platform admin: list across orgs. status blank/"all" = any status. */
+    @Transactional(readOnly = true)
+    public Page<AdminFileResponse> adminList(UUID organizationId, String status, int page, int size) {
+        int safePage = Math.max(page, 0);
+        int safeSize = Math.min(Math.max(size, 1), 200);
+        Pageable pageable = PageRequest.of(safePage, safeSize);
+        String normalized = status == null || status.isBlank() || "all".equalsIgnoreCase(status.trim())
+                ? null
+                : status.trim().toLowerCase();
+
+        Page<StoredFile> rows;
+        if (organizationId != null && normalized != null) {
+            rows = repository.findByOrganizationIdAndStatusOrderByCreatedAtDesc(organizationId, normalized, pageable);
+        } else if (organizationId != null) {
+            rows = repository.findByOrganizationIdOrderByCreatedAtDesc(organizationId, pageable);
+        } else if (normalized != null) {
+            rows = repository.findByStatusOrderByCreatedAtDesc(normalized, pageable);
+        } else {
+            rows = repository.findAllByOrderByCreatedAtDesc(pageable);
+        }
+        return rows.map(AdminFileResponse::from);
+    }
+
     @Transactional(readOnly = true)
     public FileResponse getMeta(UUID id) {
         return FileResponse.from(requireActiveFile(id, requireOrg()));
     }
 
+    @Transactional(readOnly = true)
+    public AdminFileResponse adminGetMeta(UUID id) {
+        StoredFile file = repository.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "File not found"));
+        return AdminFileResponse.from(file);
+    }
+
     @Transactional
     public FileResponse upload(MultipartFile file) {
+        return uploadForOrg(requireOrg(), file, TenantContext.get());
+    }
+
+    @Transactional
+    public AdminFileResponse adminUpload(UUID organizationId, MultipartFile file) {
+        if (organizationId == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "organizationId is required");
+        }
+        return AdminFileResponse.from(uploadEntity(organizationId, file, null));
+    }
+
+    /** Caller must close the returned StorageObject. */
+    @Transactional(readOnly = true)
+    public OpenFile openContent(UUID id) {
         UUID orgId = requireOrg();
+        StoredFile meta = requireActiveFile(id, orgId);
+        return openStored(meta);
+    }
+
+    /** Caller must close the returned StorageObject. */
+    @Transactional(readOnly = true)
+    public OpenFile adminOpenContent(UUID id) {
+        StoredFile meta = repository.findByIdAndStatus(id, "active")
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "File not found"));
+        return openStored(meta);
+    }
+
+    @Transactional
+    public void delete(UUID id) {
+        deleteStored(requireActiveFile(id, requireOrg()));
+    }
+
+    @Transactional
+    public void adminDelete(UUID id) {
+        StoredFile meta = repository.findByIdAndStatus(id, "active")
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "File not found"));
+        deleteStored(meta);
+    }
+
+    @Transactional
+    public AdminFileResponse adminRename(UUID id, String name) {
+        if (name == null || name.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "name is required");
+        }
+        String cleaned = name.trim().replaceAll("[\\\\/]+", "_");
+        if (cleaned.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "name is required");
+        }
+        if (cleaned.length() > 255) {
+            cleaned = cleaned.substring(0, 255);
+        }
+        StoredFile meta = repository.findByIdAndStatus(id, "active")
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "File not found"));
+        meta.setName(cleaned);
+        return AdminFileResponse.from(repository.save(meta));
+    }
+
+    private FileResponse uploadForOrg(UUID orgId, MultipartFile file, UUID tenantId) {
+        return FileResponse.from(uploadEntity(orgId, file, tenantId));
+    }
+
+    private StoredFile uploadEntity(UUID orgId, MultipartFile file, UUID tenantId) {
         if (file == null || file.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "file is required");
         }
@@ -82,7 +180,7 @@ public class FileService {
             StoredFile saved = repository.save(StoredFile.builder()
                     .id(fileId)
                     .organizationId(orgId)
-                    .tenantId(TenantContext.get())
+                    .tenantId(tenantId)
                     .uploadedBy(currentUserId())
                     .name(originalName)
                     .contentType(contentType)
@@ -95,7 +193,8 @@ public class FileService {
 
             log.info("file uploaded id={} org={} key={} size={} sha256={}",
                     saved.getId(), orgId, storageKey, size, checksum);
-            return FileResponse.from(saved);
+            publishFileCreated(saved);
+            return saved;
         } catch (RuntimeException e) {
             if (objectStored) {
                 try {
@@ -108,25 +207,18 @@ public class FileService {
         }
     }
 
-    /** Caller must close the returned StorageObject. */
-    @Transactional(readOnly = true)
-    public OpenFile openContent(UUID id) {
-        UUID orgId = requireOrg();
-        StoredFile meta = requireActiveFile(id, orgId);
-        ResolvedStorage storage = storageConfigs.resolveForOrg(orgId);
+    private OpenFile openStored(StoredFile meta) {
+        ResolvedStorage storage = storageConfigs.resolveForOrg(meta.getOrganizationId());
         StorageObject object = storage.provider().get(storage.credentials(), meta.getStorageKey());
         return new OpenFile(meta, object);
     }
 
-    @Transactional
-    public void delete(UUID id) {
-        UUID orgId = requireOrg();
-        StoredFile meta = requireActiveFile(id, orgId);
-        ResolvedStorage storage = storageConfigs.resolveForOrg(orgId);
+    private void deleteStored(StoredFile meta) {
+        ResolvedStorage storage = storageConfigs.resolveForOrg(meta.getOrganizationId());
         try {
             storage.provider().delete(storage.credentials(), meta.getStorageKey());
         } catch (Exception e) {
-            log.warn("storage delete failed for file {}: {}", id, e.toString());
+            log.warn("storage delete failed for file {}: {}", meta.getId(), e.toString());
         }
         meta.setStatus("deleted");
         meta.setDeletedAt(Instant.now());
@@ -138,6 +230,24 @@ public class FileService {
         public void close() throws Exception {
             object.close();
         }
+    }
+
+    /** Published as Spring event; Kafka send runs AFTER_COMMIT so rollbacks do not emit. */
+    private void publishFileCreated(StoredFile file) {
+        applicationEventPublisher.publishEvent(new FileCreatedApplicationEvent(
+                this,
+                FileLifecycleEvent.fileCreated(
+                        file.getOrganizationId(),
+                        file.getTenantId(),
+                        file.getId(),
+                        file.getUploadedBy(),
+                        file.getName(),
+                        file.getContentType(),
+                        file.getSizeBytes(),
+                        file.getChecksumSha256(),
+                        file.getStorageKey()
+                )
+        ));
     }
 
     private StoredFile requireActiveFile(UUID id, UUID orgId) {
