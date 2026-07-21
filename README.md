@@ -74,3 +74,42 @@ Also set a real `ENCRYPTION_KEY` (Base64 AES key) in prod — do not use the zer
 Jenkins → `/opt/services/file-service` → `supervisorctl restart file-service`.
 
 Env sketch: `DB_*`, `IAM_JWKS_URL`, `ENCRYPTION_KEY`, `BYZ_ADMIN_ORGANIZATION_ID`, MinIO reachable from the host.
+
+### One-time server setup (as root)
+
+Jenkins deploy uses `sudo` (same as other Byz services). Create NOPASSWD rules:
+
+```bash
+# /etc/sudoers.d/jenkins-deploy-file-service
+jenkins ALL=(root) NOPASSWD: /usr/bin/mkdir -p /opt/services/file-service
+jenkins ALL=(root) NOPASSWD: /usr/bin/cp /var/lib/jenkins/workspace/byz-files/target/*.jar /opt/services/file-service/app.jar
+jenkins ALL=(root) NOPASSWD: /usr/bin/chown root\:root /opt/services/file-service/app.jar
+jenkins ALL=(root) NOPASSWD: /usr/bin/supervisorctl reread
+jenkins ALL=(root) NOPASSWD: /usr/bin/supervisorctl update file-service
+jenkins ALL=(root) NOPASSWD: /usr/bin/supervisorctl restart file-service
+```
+
+Also create the supervisor program (once, as root):
+
+```bash
+# Or: bash scripts/server-setup.sh  (creates DB + this conf)
+cat >/etc/supervisor/conf.d/file-service.conf <<'EOF'
+[program:file-service]
+directory=/opt/services/file-service
+command=/bin/bash -c 'test -f /opt/services/file-service/app.jar && exec /usr/lib/jvm/temurin-23-jdk-amd64/bin/java -jar -Xmx256M /opt/services/file-service/app.jar --server.port=8089 || (echo "app.jar not deployed yet" && sleep 3600)'
+user=root
+autostart=true
+autorestart=true
+startsecs=15
+environment=JAVA_HOME="/usr/lib/jvm/temurin-23-jdk-amd64",DB_URL="jdbc:postgresql://127.0.0.1:5432/files",DB_USER="files",DB_PASS="files",IAM_JWKS_URL="http://127.0.0.1:8082/.well-known/jwks.json",ENCRYPTION_KEY="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",BYZ_ADMIN_ORGANIZATION_ID=""
+stdout_logfile=/var/log/supervisor/file-service.log
+stderr_logfile=/var/log/supervisor/file-service.err.log
+EOF
+supervisorctl reread
+supervisorctl update file-service
+supervisorctl restart file-service
+```
+
+Ensure Postgres DB `files` exists (and MinIO for uploads). Then re-run the Jenkins job.
+
+
