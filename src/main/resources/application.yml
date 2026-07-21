@@ -1,0 +1,52 @@
+spring:
+  application:
+    name: byz-file-service
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://127.0.0.1:5432/files}
+    username: ${DB_USER:db}
+    password: ${DB_PASS:db}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        default_schema: files
+  flyway:
+    schemas: files
+    default-schema: files
+    create-schemas: true
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          jwk-set-uri: ${IAM_JWKS_URL:https://iam.byzantineapp.dev/.well-known/jwks.json}
+  servlet:
+    multipart:
+      max-file-size: ${MAX_FILE_SIZE:50MB}
+      max-request-size: ${MAX_REQUEST_SIZE:55MB}
+
+server:
+  port: ${PORT:8089}
+
+encryption:
+  key: ${ENCRYPTION_KEY:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}
+
+byz:
+  files:
+    # Prod: set to the byz-admin organization UUID so only that org can hit /api/v1/admin/**.
+    # Empty = any authenticated JWT (local/dev).
+    admin-organization-id: ${BYZ_ADMIN_ORGANIZATION_ID:}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  pattern:
+    console: '{"time":"%d{yyyy-MM-dd HH:mm:ss.SSS}","level":"%level","service":"byz-file-service","logger":"%logger{36}","msg":"%msg"}%n'
