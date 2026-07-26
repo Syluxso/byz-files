@@ -24,7 +24,7 @@ public class FileLifecycleKafkaPublisher {
     private String topic;
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
-    public void onFileCreated(FileCreatedApplicationEvent event) {
+    public void onFileLifecycle(FileLifecycleApplicationEvent event) {
         FileLifecycleEvent payload = event.getPayload();
         try {
             String json = objectMapper.writeValueAsString(payload);

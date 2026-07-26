@@ -82,9 +82,17 @@ Also set a real `ENCRYPTION_KEY` (Base64 AES key) in prod — do not use the zer
 
 ## Kafka
 
-After a successful upload commit, file-service emits `file.created` on topic **`byz.files.file`**
-(key = `fileId`). Contract: events-service `docs/EVENTS.md`. Toggle with `BYZ_KAFKA_ENABLED`
-(default true). Bootstrap the topic via events-service `POST /api/v1/topics/bootstrap`.
+After a successful DB commit, file-service emits lifecycle events on topic **`byz.files.file`**
+(key = `fileId`):
+
+| Type | Trigger |
+|------|---------|
+| `file.created` | Upload |
+| `file.updated` | Rename (admin PATCH) |
+| `file.deleted` | Soft-delete + object removal |
+
+Contract: events-service `docs/EVENTS.md`. Toggle with `BYZ_KAFKA_ENABLED` (default true).
+Bootstrap the topic via events-service / byz-events topic bootstrap.
 
 ## Deploy
 

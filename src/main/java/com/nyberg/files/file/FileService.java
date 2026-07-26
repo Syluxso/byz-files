@@ -1,6 +1,6 @@
 package com.nyberg.files.file;
 
-import com.nyberg.files.events.FileCreatedApplicationEvent;
+import com.nyberg.files.events.FileLifecycleApplicationEvent;
 import com.nyberg.files.events.FileLifecycleEvent;
 import com.nyberg.files.storage.StorageObject;
 import com.nyberg.files.storage.StorageProviderConfigService;
@@ -140,7 +140,9 @@ public class FileService {
         StoredFile meta = repository.findByIdAndStatus(id, "active")
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "File not found"));
         meta.setName(cleaned);
-        return AdminFileResponse.from(repository.save(meta));
+        StoredFile saved = repository.save(meta);
+        publishFileUpdated(saved);
+        return AdminFileResponse.from(saved);
     }
 
     private FileResponse uploadForOrg(UUID orgId, MultipartFile file, UUID tenantId) {
@@ -223,6 +225,7 @@ public class FileService {
         meta.setStatus("deleted");
         meta.setDeletedAt(Instant.now());
         repository.save(meta);
+        publishFileDeleted(meta);
     }
 
     public record OpenFile(StoredFile meta, StorageObject object) implements AutoCloseable {
@@ -234,20 +237,49 @@ public class FileService {
 
     /** Published as Spring event; Kafka send runs AFTER_COMMIT so rollbacks do not emit. */
     private void publishFileCreated(StoredFile file) {
-        applicationEventPublisher.publishEvent(new FileCreatedApplicationEvent(
-                this,
-                FileLifecycleEvent.fileCreated(
-                        file.getOrganizationId(),
-                        file.getTenantId(),
-                        file.getId(),
-                        file.getUploadedBy(),
-                        file.getName(),
-                        file.getContentType(),
-                        file.getSizeBytes(),
-                        file.getChecksumSha256(),
-                        file.getStorageKey()
-                )
+        publishLifecycle(FileLifecycleEvent.fileCreated(
+                file.getOrganizationId(),
+                file.getTenantId(),
+                file.getId(),
+                file.getUploadedBy(),
+                file.getName(),
+                file.getContentType(),
+                file.getSizeBytes(),
+                file.getChecksumSha256(),
+                file.getStorageKey()
         ));
+    }
+
+    private void publishFileUpdated(StoredFile file) {
+        publishLifecycle(FileLifecycleEvent.fileUpdated(
+                file.getOrganizationId(),
+                file.getTenantId(),
+                file.getId(),
+                file.getUploadedBy(),
+                file.getName(),
+                file.getContentType(),
+                file.getSizeBytes(),
+                file.getChecksumSha256(),
+                file.getStorageKey()
+        ));
+    }
+
+    private void publishFileDeleted(StoredFile file) {
+        publishLifecycle(FileLifecycleEvent.fileDeleted(
+                file.getOrganizationId(),
+                file.getTenantId(),
+                file.getId(),
+                file.getUploadedBy(),
+                file.getName(),
+                file.getContentType(),
+                file.getSizeBytes(),
+                file.getChecksumSha256(),
+                file.getStorageKey()
+        ));
+    }
+
+    private void publishLifecycle(FileLifecycleEvent payload) {
+        applicationEventPublisher.publishEvent(new FileLifecycleApplicationEvent(this, payload));
     }
 
     private StoredFile requireActiveFile(UUID id, UUID orgId) {
