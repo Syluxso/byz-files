@@ -45,10 +45,14 @@ byz:
     enabled: ${BYZ_KAFKA_ENABLED:true}
     topics:
       files-file: byz.files.file
+      search-index: byz.search.index
   files:
     # Prod: set to the byz-admin organization UUID so only that org can hit /api/v1/admin/**.
     # Empty = any authenticated JWT (local/dev).
     admin-organization-id: ${BYZ_ADMIN_ORGANIZATION_ID:}
+    extract:
+      # Cap extracted text size for Kafka / Solr payloads.
+      max-chars: ${BYZ_EXTRACT_MAX_CHARS:500000}
 
 management:
   endpoints:

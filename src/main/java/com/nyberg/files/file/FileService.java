@@ -2,6 +2,9 @@ package com.nyberg.files.file;
 
 import com.nyberg.files.events.FileLifecycleApplicationEvent;
 import com.nyberg.files.events.FileLifecycleEvent;
+import com.nyberg.files.events.SearchIndexApplicationEvent;
+import com.nyberg.files.events.SearchIndexEvent;
+import com.nyberg.files.extract.TextExtractor;
 import com.nyberg.files.storage.StorageObject;
 import com.nyberg.files.storage.StorageProviderConfigService;
 import com.nyberg.files.storage.StorageProviderConfigService.ResolvedStorage;
@@ -21,9 +24,8 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.io.InputStream;
-import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
@@ -40,6 +42,7 @@ public class FileService {
     private final StoredFileRepository repository;
     private final StorageProviderConfigService storageConfigs;
     private final ApplicationEventPublisher applicationEventPublisher;
+    private final TextExtractor textExtractor;
 
     @Transactional(readOnly = true)
     public List<FileResponse> list() {
@@ -158,25 +161,39 @@ public class FileService {
                 ? file.getOriginalFilename()
                 : "upload.bin";
         String contentType = file.getContentType() != null ? file.getContentType() : "application/octet-stream";
-        long size = file.getSize();
 
         UUID fileId = UUID.randomUUID();
         LocalDate today = LocalDate.now();
         String storageKey = orgId + "/" + today.getYear() + "/" + today.getMonthValue()
                 + "/" + fileId + "/" + sanitizeName(originalName);
 
-        ResolvedStorage storage = storageConfigs.resolveForOrg(orgId);
-        MessageDigest digest = sha256();
-        boolean objectStored = false;
-        try (InputStream in = file.getInputStream();
-             DigestInputStream din = new DigestInputStream(in, digest)) {
-            storage.provider().put(storage.credentials(), storageKey, din, size, contentType);
-            objectStored = true;
+        final byte[] bytes;
+        try {
+            bytes = file.getBytes();
         } catch (IOException e) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Failed to read upload stream");
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Failed to read upload bytes");
+        }
+        if (bytes.length == 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "file is required");
         }
 
+        MessageDigest digest = sha256();
+        digest.update(bytes);
         String checksum = HexFormat.of().formatHex(digest.digest());
+
+        ResolvedStorage storage = storageConfigs.resolveForOrg(orgId);
+        boolean objectStored = false;
+        try {
+            storage.provider().put(
+                    storage.credentials(),
+                    storageKey,
+                    new ByteArrayInputStream(bytes),
+                    bytes.length,
+                    contentType);
+            objectStored = true;
+        } catch (RuntimeException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Failed to store upload");
+        }
 
         try {
             StoredFile saved = repository.save(StoredFile.builder()
@@ -186,7 +203,7 @@ public class FileService {
                     .uploadedBy(currentUserId())
                     .name(originalName)
                     .contentType(contentType)
-                    .sizeBytes(size)
+                    .sizeBytes(bytes.length)
                     .checksumSha256(checksum)
                     .storageKey(storageKey)
                     .status("active")
@@ -194,8 +211,21 @@ public class FileService {
                     .build());
 
             log.info("file uploaded id={} org={} key={} size={} sha256={}",
-                    saved.getId(), orgId, storageKey, size, checksum);
+                    saved.getId(), orgId, storageKey, bytes.length, checksum);
             publishFileCreated(saved);
+
+            String extracted = textExtractor.extract(bytes, contentType, originalName);
+            String indexContent = extracted.isBlank()
+                    ? (originalName + " " + contentType + " " + storageKey).trim()
+                    : extracted;
+            publishSearchIndex(saved, indexContent);
+            if (extracted.isBlank()) {
+                log.info("file extract empty id={} name={} type={} (indexed metadata fallback)",
+                        saved.getId(), originalName, contentType);
+            } else {
+                log.info("file extract ok id={} name={} chars={}",
+                        saved.getId(), originalName, extracted.length());
+            }
             return saved;
         } catch (RuntimeException e) {
             if (objectStored) {
@@ -226,6 +256,7 @@ public class FileService {
         meta.setDeletedAt(Instant.now());
         repository.save(meta);
         publishFileDeleted(meta);
+        publishSearchDelete(meta);
     }
 
     public record OpenFile(StoredFile meta, StorageObject object) implements AutoCloseable {
@@ -280,6 +311,33 @@ public class FileService {
 
     private void publishLifecycle(FileLifecycleEvent payload) {
         applicationEventPublisher.publishEvent(new FileLifecycleApplicationEvent(this, payload));
+    }
+
+    private void publishSearchIndex(StoredFile file, String content) {
+        applicationEventPublisher.publishEvent(new SearchIndexApplicationEvent(
+                this,
+                SearchIndexEvent.index(
+                        file.getOrganizationId(),
+                        file.getTenantId(),
+                        file.getUploadedBy(),
+                        file.getId(),
+                        file.getName(),
+                        content,
+                        file.getStorageKey()
+                )
+        ));
+    }
+
+    private void publishSearchDelete(StoredFile file) {
+        applicationEventPublisher.publishEvent(new SearchIndexApplicationEvent(
+                this,
+                SearchIndexEvent.delete(
+                        file.getOrganizationId(),
+                        file.getTenantId(),
+                        file.getUploadedBy(),
+                        file.getId()
+                )
+        ));
     }
 
     private StoredFile requireActiveFile(UUID id, UUID orgId) {

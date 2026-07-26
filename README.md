@@ -91,8 +91,12 @@ After a successful DB commit, file-service emits lifecycle events on topic **`by
 | `file.updated` | Rename (admin PATCH) |
 | `file.deleted` | Soft-delete + object removal |
 
+After upload, file-service also extracts text (Apache Tika) and emits
+`search.index` on **`byz.search.index`** (key = `fileId`) so Solr gets document body.
+Deletes emit `search.delete` as well.
+
 Contract: events-service `docs/EVENTS.md`. Toggle with `BYZ_KAFKA_ENABLED` (default true).
-Bootstrap the topic via events-service / byz-events topic bootstrap.
+Bootstrap topics via events-service / byz-events topic bootstrap.
 
 ## Deploy
 
