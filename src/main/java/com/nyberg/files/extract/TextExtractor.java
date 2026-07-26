@@ -3,6 +3,7 @@ package com.nyberg.files.extract;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.AutoDetectParser;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.sax.BodyContentHandler;
@@ -45,7 +46,7 @@ public class TextExtractor {
                 metadata.set(Metadata.CONTENT_TYPE, contentType);
             }
             if (filename != null && !filename.isBlank()) {
-                metadata.set(Metadata.RESOURCE_NAME_KEY, filename);
+                metadata.set(TikaCoreProperties.RESOURCE_NAME_KEY, filename);
             }
             AutoDetectParser parser = new AutoDetectParser();
             try (InputStream in = new ByteArrayInputStream(bytes)) {
